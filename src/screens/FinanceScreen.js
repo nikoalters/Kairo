@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import {
     Alert,
@@ -10,336 +11,415 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
-import { borrarTodo, guardarDinero, guardarMovimientos, leerDinero, leerMovimientos } from '../utils/storage';
+import {
+    guardarDinero,
+    guardarListaMetas,
+    guardarMovimientos,
+    leerDinero,
+    leerListaMetas,
+    leerMovimientos
+} from '../utils/storage';
 
 export default function FinanceScreen() {
     const [saldo, setSaldo] = useState(0);
     const [movimientos, setMovimientos] = useState([]);
+    const [metas, setMetas] = useState([]);
     const [cargando, setCargando] = useState(true);
 
-    // --- ESTADOS PARA EL MODAL (VENTANA EMERGENTE) ---
+    // Modales
     const [modalVisible, setModalVisible] = useState(false);
-    const [tipoAccion, setTipoAccion] = useState('ingreso'); // 'ingreso' o 'gasto'
+    const [tipoAccion, setTipoAccion] = useState('ingreso');
     const [montoInput, setMontoInput] = useState('');
     const [tituloInput, setTituloInput] = useState('');
+    const [destinoSeleccionado, setDestinoSeleccionado] = useState('billetera');
 
-    // Carga inicial de datos
+    const [modalMetaVisible, setModalMetaVisible] = useState(false);
+    const [nombreMeta, setNombreMeta] = useState('');
+    const [montoMeta, setMontoMeta] = useState('');
+
+    const [modalDetalleMeta, setModalDetalleMeta] = useState(false);
+    const [metaSeleccionada, setMetaSeleccionada] = useState(null);
+
     useEffect(() => {
-        const cargarDatos = async () => {
-            const saldoGuardado = await leerDinero();
-            const movimientosGuardados = await leerMovimientos();
-
-            if (saldoGuardado !== null) setSaldo(saldoGuardado);
-            else setSaldo(1250000);
-
-            if (movimientosGuardados !== null) setMovimientos(movimientosGuardados);
-            else {
-                const datosIniciales = [
-                    { id: 1, titulo: 'Uber Eats', fecha: 'Hoy, 14:30', monto: -12500, icono: '🍔' },
-                ];
-                setMovimientos(datosIniciales);
-                guardarMovimientos(datosIniciales);
-            }
-            setCargando(false);
-        };
         cargarDatos();
     }, []);
 
-    // --- LÓGICA DEL MODAL ---
-    const abrirModal = (tipo) => {
-        setTipoAccion(tipo);
-        setMontoInput('');
-        setTituloInput('');
-        setModalVisible(true);
+    const cargarDatos = async () => {
+        const s = await leerDinero();
+        const m = await leerMovimientos();
+        const metasGuardadas = await leerListaMetas();
+        setSaldo(s);
+        setMovimientos(m);
+        setMetas(metasGuardadas);
+        setCargando(false);
     };
 
-    const guardarTransaccion = () => {
-        // 1. Validar que haya datos
-        if (!montoInput || !tituloInput) {
-            Alert.alert("Faltan datos", "Por favor escribe un monto y una descripción.");
-            return;
+    const crearMeta = () => {
+        if (!nombreMeta || !montoMeta) return;
+        const nuevaMeta = {
+            id: Date.now().toString(),
+            nombre: nombreMeta,
+            objetivo: parseInt(montoMeta),
+            ahorrado: 0
+        };
+        const nuevasMetas = [...metas, nuevaMeta];
+        setMetas(nuevasMetas);
+        guardarListaMetas(nuevasMetas);
+        setModalMetaVisible(false);
+        setNombreMeta(''); setMontoMeta('');
+    };
+
+    // --- NUEVA FUNCIÓN: ELIMINAR META ---
+    const confirmarEliminarMeta = () => {
+        if (!metaSeleccionada) return;
+
+        const tieneFondos = metaSeleccionada.ahorrado > 0;
+
+        Alert.alert(
+            "Eliminar Meta",
+            tieneFondos
+                ? `Esta meta tiene ${formatoDinero(metaSeleccionada.ahorrado)}. ¿Qué hacemos con el dinero?`
+                : "¿Estás seguro de borrar esta meta?",
+            [
+                { text: "Cancelar", style: "cancel" },
+                // Opción 1: Si tiene fondos, devolver a billetera
+                tieneFondos ? {
+                    text: "Devolver a Billetera",
+                    onPress: () => eliminarMeta(true)
+                } : null,
+                // Opción 2: Borrar definitivamente (Gastar/Perder)
+                {
+                    text: tieneFondos ? "Borrar (Sin devolver)" : "Sí, Borrar",
+                    style: "destructive",
+                    onPress: () => eliminarMeta(false)
+                }
+            ].filter(Boolean) // Filtra opciones nulas
+        );
+    };
+
+    const eliminarMeta = (devolverPlata) => {
+        if (devolverPlata) {
+            const nuevoSaldo = saldo + metaSeleccionada.ahorrado;
+            setSaldo(nuevoSaldo);
+            guardarDinero(nuevoSaldo);
+            registrarMovimiento(`Cierre Meta: ${metaSeleccionada.nombre}`, metaSeleccionada.ahorrado, '💰', 'ingreso');
         }
 
-        // 2. Convertir texto a número
-        const montoNumerico = parseInt(montoInput);
-        if (isNaN(montoNumerico) || montoNumerico <= 0) {
-            Alert.alert("Error", "Ingresa un monto válido mayor a 0.");
-            return;
-        }
+        const nuevasMetas = metas.filter(m => m.id !== metaSeleccionada.id);
+        setMetas(nuevasMetas);
+        guardarListaMetas(nuevasMetas);
+        setModalDetalleMeta(false);
+    };
+    // ------------------------------------
 
-        // 3. Calcular nuevo saldo
-        let nuevoSaldo = saldo;
-        let montoFinal = montoNumerico;
-        let icono = '💰';
+    const gestionarMeta = (accion, monto) => {
+        if (!metaSeleccionada || !monto) return;
+        const valor = parseInt(monto);
+        if (isNaN(valor) || valor <= 0) return;
 
-        if (tipoAccion === 'ingreso') {
-            nuevoSaldo += montoNumerico;
-            icono = '💵';
-        } else {
-            // Es gasto
-            if (saldo < montoNumerico) {
-                Alert.alert("¡Ups!", "No tienes suficiente saldo para este gasto.");
+        if (accion === 'retirar') {
+            if (metaSeleccionada.ahorrado < valor) {
+                Alert.alert("Error", "No tienes suficiente dinero en esta meta.");
                 return;
             }
-            nuevoSaldo -= montoNumerico;
-            montoFinal = -montoNumerico; // Guardamos negativo para el historial
-            icono = '💸';
+            const nuevoSaldo = saldo + valor;
+            setSaldo(nuevoSaldo);
+            guardarDinero(nuevoSaldo);
+            registrarMovimiento(`Rescate: ${metaSeleccionada.nombre}`, valor, '🚨', 'ingreso');
+            Alert.alert("Transferencia", `Has movido ${formatoDinero(valor)} a tu Billetera.`);
         }
 
-        // 4. Guardar todo
-        setSaldo(nuevoSaldo);
-        guardarDinero(nuevoSaldo);
+        const metasActualizadas = metas.map(m => {
+            if (m.id === metaSeleccionada.id) {
+                const nuevoAhorro = accion === 'depositar' ? m.ahorrado + valor : m.ahorrado - valor;
+                return { ...m, ahorrado: nuevoAhorro };
+            }
+            return m;
+        });
 
-        const nuevoMovimiento = {
-            id: Date.now(),
-            titulo: tituloInput,
-            fecha: 'Justo ahora',
-            monto: montoFinal,
-            icono: icono
-        };
+        setMetas(metasActualizadas);
+        guardarListaMetas(metasActualizadas);
+        setModalDetalleMeta(false);
+    };
 
-        const nuevaLista = [nuevoMovimiento, ...movimientos];
-        setMovimientos(nuevaLista);
-        guardarMovimientos(nuevaLista);
+    const procesarTransaccion = () => {
+        const valor = parseInt(montoInput);
+        if (!tituloInput || isNaN(valor) || valor <= 0) {
+            Alert.alert("Error", "Datos inválidos");
+            return;
+        }
 
-        // 5. Cerrar y limpiar
+        if (tipoAccion === 'gasto') {
+            if (saldo < valor) {
+                Alert.alert("Saldo Insuficiente", "No tienes dinero en la billetera.");
+                return;
+            }
+            const nuevoSaldo = saldo - valor;
+            setSaldo(nuevoSaldo);
+            guardarDinero(nuevoSaldo);
+            registrarMovimiento(tituloInput, -valor, '💸', 'gasto');
+
+        } else {
+            if (destinoSeleccionado === 'billetera') {
+                const nuevoSaldo = saldo + valor;
+                setSaldo(nuevoSaldo);
+                guardarDinero(nuevoSaldo);
+                registrarMovimiento(tituloInput, valor, '💰', 'ingreso');
+            } else {
+                const metasActualizadas = metas.map(m => {
+                    if (m.id === destinoSeleccionado) {
+                        return { ...m, ahorrado: m.ahorrado + valor };
+                    }
+                    return m;
+                });
+                setMetas(metasActualizadas);
+                guardarListaMetas(metasActualizadas);
+
+                const metaDestino = metas.find(m => m.id === destinoSeleccionado);
+                registrarMovimiento(`${tituloInput} (${metaDestino.nombre})`, valor, '🎯', 'neutro');
+            }
+        }
         setModalVisible(false);
     };
 
-    // --- UTILIDADES ---
-    const handleReset = async () => {
-        await borrarTodo();
-        Alert.alert("Reinicio", "Datos borrados. Cierra y abre la app.");
+    const registrarMovimiento = (titulo, monto, icono, tipo) => {
+        const nuevoMov = { id: Date.now(), titulo, fecha: 'Hoy', monto, icono, tipo };
+        const lista = [nuevoMov, ...movimientos];
+        setMovimientos(lista);
+        guardarMovimientos(lista);
     };
 
-    const formatoDinero = (valor) => {
-        return '$ ' + valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    const abrirModalIngreso = () => {
+        setTipoAccion('ingreso');
+        setDestinoSeleccionado('billetera');
+        setMontoInput(''); setTituloInput('');
+        setModalVisible(true);
     };
 
-    if (cargando) {
-        return (
-            <View style={styles.center}>
-                <Text style={{ color: '#38bdf8' }}>Cargando Billetera...</Text>
-            </View>
-        );
-    }
+    const abrirModalGasto = () => {
+        setTipoAccion('gasto');
+        setMontoInput(''); setTituloInput('');
+        setModalVisible(true);
+    };
+
+    const formatoDinero = (valor) => '$ ' + valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+    if (cargando) return <View style={styles.center}><Text style={{ color: '#38bdf8' }}>Cargando...</Text></View>;
 
     return (
         <SafeAreaView style={styles.container}>
             <ScrollView contentContainerStyle={styles.scrollContent}>
 
-                <Text style={styles.headerTitle}>Billetera Kairo</Text>
+                <Text style={styles.headerTitle}>Finanzas</Text>
 
-                {/* Tarjeta de Saldo */}
                 <View style={styles.balanceCard}>
-                    <Text style={styles.balanceLabel}>Saldo Disponible</Text>
+                    <Text style={styles.balanceLabel}>Disponible en Billetera</Text>
                     <Text style={styles.balanceAmount}>{formatoDinero(saldo)}</Text>
                     <View style={styles.cardFooter}>
                         <Text style={styles.cardNumber}>**** **** **** 4242</Text>
-                        <Text style={{ fontSize: 20 }}>💳</Text>
+                        <Ionicons name="wallet" size={24} color="#38bdf8" />
                     </View>
                 </View>
 
-                {/* Botones de Acción */}
+                <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Mis Metas</Text>
+                    <TouchableOpacity onPress={() => setModalMetaVisible(true)}>
+                        <Ionicons name="add-circle" size={28} color="#38bdf8" />
+                    </TouchableOpacity>
+                </View>
+
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 25 }}>
+                    {metas.length === 0 ? (
+                        <TouchableOpacity style={styles.emptyGoalCard} onPress={() => setModalMetaVisible(true)}>
+                            <Text style={{ color: '#64748b' }}>+ Crear Nueva Meta</Text>
+                        </TouchableOpacity>
+                    ) : (
+                        metas.map(meta => {
+                            const progreso = Math.min((meta.ahorrado / meta.objetivo) * 100, 100);
+                            return (
+                                <TouchableOpacity
+                                    key={meta.id}
+                                    style={styles.goalCardMini}
+                                    onPress={() => { setMetaSeleccionada(meta); setModalDetalleMeta(true); }}
+                                >
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                        <Text style={styles.goalTitleMini}>{meta.nombre}</Text>
+                                        <Text style={styles.goalPercentMini}>{Math.floor(progreso)}%</Text>
+                                    </View>
+                                    <Text style={styles.goalAmountMini}>{formatoDinero(meta.ahorrado)}</Text>
+                                    <View style={styles.progressBgMini}>
+                                        <View style={[styles.progressFillMini, { width: `${progreso}%` }]} />
+                                    </View>
+                                </TouchableOpacity>
+                            );
+                        })
+                    )}
+                </ScrollView>
+
                 <View style={styles.actionsContainer}>
-                    <TouchableOpacity style={styles.actionButton} onPress={() => abrirModal('ingreso')}>
+                    <TouchableOpacity style={styles.actionButton} onPress={abrirModalIngreso}>
                         <View style={[styles.emojiCircle, { backgroundColor: 'rgba(34, 197, 94, 0.1)' }]}>
                             <Text style={styles.emoji}>💰</Text>
                         </View>
                         <Text style={styles.actionText}>Ingresar</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={styles.actionButton} onPress={() => abrirModal('gasto')}>
+                    <TouchableOpacity style={styles.actionButton} onPress={abrirModalGasto}>
                         <View style={[styles.emojiCircle, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
                             <Text style={styles.emoji}>💸</Text>
                         </View>
                         <Text style={styles.actionText}>Gastar</Text>
                     </TouchableOpacity>
-
-                    <TouchableOpacity style={styles.actionButton} onPress={() => Alert.alert("Pronto", "Gráficos en construcción")}>
-                        <View style={[styles.emojiCircle, { backgroundColor: 'rgba(56, 189, 248, 0.1)' }]}>
-                            <Text style={styles.emoji}>📊</Text>
-                        </View>
-                        <Text style={styles.actionText}>Analizar</Text>
-                    </TouchableOpacity>
                 </View>
 
-                {/* Historial */}
-                <Text style={styles.sectionTitle}>Historial</Text>
+                <Text style={styles.sectionTitle}>Movimientos</Text>
                 <View style={styles.transactionList}>
                     {movimientos.map((item) => (
                         <View key={item.id} style={styles.transactionItem}>
-                            <View style={styles.transactionIcon}>
-                                <Text style={{ fontSize: 22 }}>{item.icono}</Text>
-                            </View>
+                            <View style={styles.transactionIcon}><Text style={{ fontSize: 22 }}>{item.icono}</Text></View>
                             <View style={styles.transactionInfo}>
                                 <Text style={styles.transactionTitle}>{item.titulo}</Text>
                                 <Text style={styles.transactionDate}>{item.fecha}</Text>
                             </View>
-                            <Text style={[
-                                styles.transactionAmount,
-                                { color: item.monto > 0 ? '#22c55e' : '#ef4444' }
-                            ]}>
-                                {item.monto > 0 ? '+' : ''} {formatoDinero(item.monto)}
+                            <Text style={[styles.transactionAmount, { color: item.tipo === 'gasto' ? '#ef4444' : '#22c55e' }]}>
+                                {item.tipo === 'gasto' ? '-' : '+'} {formatoDinero(Math.abs(item.monto))}
                             </Text>
                         </View>
                     ))}
                 </View>
-
-                <TouchableOpacity onPress={handleReset} style={{ marginTop: 40, alignItems: 'center' }}>
-                    <Text style={{ color: '#475569', fontSize: 12 }}>Resetear Memoria</Text>
-                </TouchableOpacity>
-
             </ScrollView>
 
-            {/* --- AQUÍ ESTÁ EL MODAL --- */}
-            <Modal
-                animationType="slide"
-                transparent={true}
-                visible={modalVisible}
-                onRequestClose={() => setModalVisible(false)}
-            >
-                <KeyboardAvoidingView
-                    behavior={Platform.OS === "ios" ? "padding" : "height"}
-                    style={styles.modalContainer}
-                >
+            {/* --- MODAL 1: INGRESAR / GASTAR --- */}
+            <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
+                <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainer}>
                     <View style={styles.modalContent}>
-                        <Text style={styles.modalTitle}>
-                            {tipoAccion === 'ingreso' ? 'Nueva Entrada 🤑' : 'Nuevo Gasto 📉'}
-                        </Text>
-
+                        <Text style={styles.modalTitle}>{tipoAccion === 'ingreso' ? 'Recibir Dinero 🤑' : 'Realizar Gasto 📉'}</Text>
                         <Text style={styles.label}>Monto:</Text>
-                        <TextInput
-                            style={styles.input}
-                            placeholder="Ej: 5000"
-                            placeholderTextColor="#64748b"
-                            keyboardType="numeric"
-                            value={montoInput}
-                            onChangeText={setMontoInput}
-                        />
-
+                        <TextInput style={styles.input} keyboardType="numeric" placeholder="0" placeholderTextColor="#64748b" value={montoInput} onChangeText={setMontoInput} />
                         <Text style={styles.label}>Descripción:</Text>
-                        <TextInput
-                            style={styles.input}
-                            placeholder="Ej: Completo italiano"
-                            placeholderTextColor="#64748b"
-                            value={tituloInput}
-                            onChangeText={setTituloInput}
-                        />
+                        <TextInput style={styles.input} placeholder="..." placeholderTextColor="#64748b" value={tituloInput} onChangeText={setTituloInput} />
+
+                        {tipoAccion === 'ingreso' && (
+                            <View style={{ marginBottom: 20 }}>
+                                <Text style={styles.label}>Destino:</Text>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+                                    <TouchableOpacity style={[styles.selectorBtn, destinoSeleccionado === 'billetera' && styles.selectorActive]} onPress={() => setDestinoSeleccionado('billetera')}>
+                                        <Text style={styles.selectorText}>💳 Billetera</Text>
+                                    </TouchableOpacity>
+                                    {metas.map((meta) => (
+                                        <TouchableOpacity key={meta.id} style={[styles.selectorBtn, destinoSeleccionado === meta.id && styles.selectorActive]} onPress={() => setDestinoSeleccionado(meta.id)}>
+                                            <Text style={styles.selectorText}>🎯 {meta.nombre}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </ScrollView>
+                            </View>
+                        )}
 
                         <View style={styles.modalButtons}>
-                            <TouchableOpacity
-                                style={[styles.btn, styles.btnCancel]}
-                                onPress={() => setModalVisible(false)}
-                            >
-                                <Text style={styles.btnText}>Cancelar</Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                                style={[styles.btn, styles.btnSave]}
-                                onPress={guardarTransaccion}
-                            >
-                                <Text style={styles.btnText}>Guardar</Text>
-                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setModalVisible(false)}><Text style={styles.btnText}>Cancelar</Text></TouchableOpacity>
+                            <TouchableOpacity style={[styles.btn, styles.btnSave]} onPress={procesarTransaccion}><Text style={styles.btnText}>Guardar</Text></TouchableOpacity>
                         </View>
                     </View>
                 </KeyboardAvoidingView>
             </Modal>
 
+            {/* --- MODAL 2: CREAR META --- */}
+            <Modal animationType="fade" transparent={true} visible={modalMetaVisible} onRequestClose={() => setModalMetaVisible(false)}>
+                <View style={styles.modalContainer}>
+                    <View style={[styles.modalContent, { borderColor: '#f59e0b' }]}>
+                        <Text style={styles.modalTitle}>Nueva Meta 🎯</Text>
+                        <TextInput style={styles.input} placeholder="Nombre (ej: Vacaciones)" placeholderTextColor="#64748b" value={nombreMeta} onChangeText={setNombreMeta} />
+                        <TextInput style={styles.input} placeholder="Monto Objetivo ($)" keyboardType="numeric" placeholderTextColor="#64748b" value={montoMeta} onChangeText={setMontoMeta} />
+                        <TouchableOpacity style={[styles.btn, { backgroundColor: '#f59e0b', marginTop: 10 }]} onPress={crearMeta}><Text style={styles.btnText}>Crear Meta</Text></TouchableOpacity>
+                        <TouchableOpacity style={{ alignItems: 'center', marginTop: 15 }} onPress={() => setModalMetaVisible(false)}><Text style={{ color: '#64748b' }}>Cancelar</Text></TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* --- MODAL 3: GESTIONAR META (CON BORRAR) --- */}
+            <Modal animationType="slide" transparent={true} visible={modalDetalleMeta} onRequestClose={() => setModalDetalleMeta(false)}>
+                <View style={styles.modalContainer}>
+                    <View style={styles.modalContent}>
+
+                        {/* Encabezado con Botón de Borrar */}
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                            <Text style={[styles.modalTitle, { marginBottom: 0 }]}>{metaSeleccionada?.nombre}</Text>
+                            <TouchableOpacity onPress={confirmarEliminarMeta} style={{ padding: 5 }}>
+                                <Ionicons name="trash-outline" size={24} color="#ef4444" />
+                            </TouchableOpacity>
+                        </View>
+
+                        <Text style={{ color: '#94a3b8', textAlign: 'center', marginBottom: 20 }}>
+                            Ahorrado: {formatoDinero(metaSeleccionada?.ahorrado || 0)} / {formatoDinero(metaSeleccionada?.objetivo || 0)}
+                        </Text>
+
+                        {/* Barra de Progreso en el Modal */}
+                        <View style={[styles.progressBgMini, { height: 10, marginBottom: 20 }]}>
+                            <View style={[styles.progressFillMini, { width: `${Math.min(((metaSeleccionada?.ahorrado || 0) / (metaSeleccionada?.objetivo || 1)) * 100, 100)}%` }]} />
+                        </View>
+
+                        <TouchableOpacity
+                            style={[styles.btn, { backgroundColor: '#ef4444', marginBottom: 10 }]}
+                            onPress={() => {
+                                Alert.alert("Retiro de Emergencia", "¿Cuánto necesitas retirar?", [
+                                    { text: "Todo", onPress: () => gestionarMeta('retirar', metaSeleccionada.ahorrado) },
+                                    { text: "Cancelar", style: "cancel" }
+                                ]);
+                            }}
+                        >
+                            <Text style={styles.btnText}>🚨 Retiro Emergencia</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity style={{ alignItems: 'center', marginTop: 15 }} onPress={() => setModalDetalleMeta(false)}><Text style={{ color: '#64748b' }}>Cerrar</Text></TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
         </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0f172a' },
-    center: { flex: 1, backgroundColor: '#0f172a', justifyContent: 'center', alignItems: 'center' },
+    center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     scrollContent: { padding: 20 },
     headerTitle: { fontSize: 28, fontWeight: 'bold', color: '#f8fafc', marginBottom: 20 },
-
-    // Tarjetas y Botones (Estilos anteriores)
-    balanceCard: { backgroundColor: '#1e293b', borderRadius: 20, padding: 25, marginBottom: 25, borderWidth: 1, borderColor: '#334155', elevation: 5 },
-    balanceLabel: { color: '#94a3b8', fontSize: 14, textTransform: 'uppercase', letterSpacing: 1 },
+    balanceCard: { backgroundColor: '#1e293b', borderRadius: 20, padding: 25, marginBottom: 25, borderWidth: 1, borderColor: '#334155' },
+    balanceLabel: { color: '#94a3b8', fontSize: 14, textTransform: 'uppercase' },
     balanceAmount: { color: '#ffffff', fontSize: 36, fontWeight: 'bold', marginVertical: 10 },
-    cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
-    cardNumber: { color: '#64748b', fontSize: 16, fontFamily: 'monospace' },
-    actionsContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 30 },
-    actionButton: { alignItems: 'center', width: '30%' },
+    cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    cardNumber: { color: '#64748b', fontFamily: 'monospace' },
+    sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+    sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#f8fafc' },
+    goalCardMini: { backgroundColor: '#1e293b', width: 160, padding: 15, borderRadius: 16, marginRight: 15, borderWidth: 1, borderColor: '#334155' },
+    emptyGoalCard: { backgroundColor: 'rgba(30, 41, 59, 0.5)', width: 160, height: 100, borderRadius: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#334155', borderStyle: 'dashed' },
+    goalTitleMini: { color: '#f8fafc', fontWeight: 'bold', fontSize: 14, marginBottom: 5 },
+    goalAmountMini: { color: '#f59e0b', fontWeight: 'bold', fontSize: 16, marginBottom: 8 },
+    goalPercentMini: { color: '#94a3b8', fontSize: 12 },
+    progressBgMini: { height: 6, backgroundColor: '#334155', borderRadius: 3, overflow: 'hidden' },
+    progressFillMini: { height: '100%', backgroundColor: '#f59e0b', borderRadius: 3 },
+    actionsContainer: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 30 },
+    actionButton: { alignItems: 'center', width: '40%' },
     emojiCircle: { width: 65, height: 65, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
     emoji: { fontSize: 32 },
-    actionText: { color: '#cbd5e1', fontSize: 13, fontWeight: '600' },
-
-    // Lista
-    sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#f8fafc', marginBottom: 15 },
+    actionText: { color: '#cbd5e1', fontWeight: '600' },
     transactionList: { backgroundColor: '#1e293b', borderRadius: 16, padding: 10 },
     transactionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#334155' },
     transactionIcon: { width: 45, height: 45, backgroundColor: '#334155', borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
     transactionInfo: { flex: 1 },
-    transactionTitle: { color: '#f1f5f9', fontSize: 16, fontWeight: '500' },
+    transactionTitle: { color: '#f1f5f9', fontWeight: '500' },
     transactionDate: { color: '#64748b', fontSize: 12 },
-    transactionAmount: { fontSize: 16, fontWeight: 'bold' },
-
-    // --- ESTILOS DEL MODAL (NUEVO) ---
-    modalContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: 'rgba(0,0,0,0.8)', // Fondo oscuro semitransparente
-    },
-    modalContent: {
-        width: '85%',
-        backgroundColor: '#1e293b',
-        padding: 25,
-        borderRadius: 20,
-        borderWidth: 1,
-        borderColor: '#38bdf8', // Borde Cyan brillante
-        shadowColor: '#38bdf8',
-        shadowOpacity: 0.5,
-        elevation: 10,
-    },
-    modalTitle: {
-        fontSize: 22,
-        fontWeight: 'bold',
-        color: '#f8fafc',
-        marginBottom: 20,
-        textAlign: 'center',
-    },
-    label: {
-        color: '#94a3b8',
-        marginBottom: 8,
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    input: {
-        backgroundColor: '#0f172a',
-        color: '#fff',
-        padding: 15,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: '#334155',
-        marginBottom: 20,
-        fontSize: 16,
-    },
-    modalButtons: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginTop: 10,
-    },
-    btn: {
-        flex: 1,
-        padding: 15,
-        borderRadius: 12,
-        alignItems: 'center',
-    },
-    btnCancel: {
-        backgroundColor: '#334155',
-        marginRight: 10,
-    },
-    btnSave: {
-        backgroundColor: '#38bdf8', // Cyan Kairo
-    },
-    btnText: {
-        color: '#fff',
-        fontWeight: 'bold',
-        fontSize: 16,
-    }
+    transactionAmount: { fontWeight: 'bold' },
+    modalContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)' },
+    modalContent: { width: '85%', backgroundColor: '#1e293b', padding: 25, borderRadius: 20, borderWidth: 1, borderColor: '#38bdf8' },
+    modalTitle: { fontSize: 22, fontWeight: 'bold', color: '#f8fafc', marginBottom: 20, textAlign: 'center' },
+    label: { color: '#94a3b8', marginBottom: 8, fontSize: 14, fontWeight: '600' },
+    input: { backgroundColor: '#0f172a', color: '#fff', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#334155', marginBottom: 20, fontSize: 16 },
+    selectorBtn: { paddingHorizontal: 15, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: '#334155', alignItems: 'center', minWidth: 100 },
+    selectorActive: { borderColor: '#38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.1)' },
+    selectorText: { color: '#cbd5e1', fontSize: 12, fontWeight: 'bold' },
+    modalButtons: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+    btn: { flex: 1, padding: 15, borderRadius: 12, alignItems: 'center' },
+    btnCancel: { backgroundColor: '#334155', marginRight: 10 },
+    btnSave: { backgroundColor: '#38bdf8' },
+    btnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 }
 });
