@@ -1,115 +1,186 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
-import { Alert, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, Vibration, View } from 'react-native';
-import { guardarMinutos, leerMinutos } from '../utils/storage';
+import { useFocusEffect } from '@react-navigation/native';
+import { useCallback, useEffect, useState } from 'react';
+import {
+    Alert,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    SafeAreaView, ScrollView,
+    StyleSheet, Text,
+    TextInput,
+    TouchableOpacity,
+    Vibration,
+    View
+} from 'react-native';
+import { guardarMinutos, guardarSkills, leerMinutos, leerSkills } from '../utils/storage';
 
 export default function CerebroScreen() {
+    // Estados del Timer
     const [segundos, setSegundos] = useState(25 * 60);
     const [activo, setActivo] = useState(false);
-    const [minutosAcumulados, setMinutosAcumulados] = useState(0);
 
-    // --- VARIABLES DE GAMIFICACIÓN ---
-    const XP_POR_MINUTO = 10;
-    const XP_PARA_SIGUIENTE_NIVEL = 500; // 50 minutos para subir nivel
+    // Estados de Datos
+    const [minutosGlobales, setMinutosGlobales] = useState(0);
+    const [skills, setSkills] = useState([]);
+    const [skillSeleccionada, setSkillSeleccionada] = useState(null);
 
-    // Calculamos todo al vuelo
-    const xpTotal = minutosAcumulados * XP_POR_MINUTO;
-    const nivelActual = Math.floor(xpTotal / XP_PARA_SIGUIENTE_NIVEL) + 1;
+    // Modal Nueva Skill
+    const [modalVisible, setModalVisible] = useState(false);
+    const [nombreSkill, setNombreSkill] = useState('');
 
-    // Cálculo de la barra de progreso (0% a 100%)
-    const xpEnNivelActual = xpTotal % XP_PARA_SIGUIENTE_NIVEL;
-    const porcentajeBarra = (xpEnNivelActual / XP_PARA_SIGUIENTE_NIVEL) * 100;
+    // Constantes RPG
+    const XP_POR_SESION = 250; // 25 min = 250 XP
 
-    // Función para obtener títulos serios
-    const obtenerTitulo = (lvl) => {
-        if (lvl < 5) return "Novato";
-        if (lvl < 10) return "Aprendiz";
-        if (lvl < 20) return "Junior Dev";
-        if (lvl < 30) return "Semi-Senior";
-        return "Senior Architect";
-    };
+    useFocusEffect(
+        useCallback(() => {
+            cargarDatos();
+        }, [])
+    );
 
-    useEffect(() => {
-        const cargarTiempo = async () => {
-            const guardado = await leerMinutos();
-            setMinutosAcumulados(guardado || 0);
-        };
-        cargarTiempo();
-    }, []);
-
+    // Efecto del Timer
     useEffect(() => {
         let intervalo = null;
         if (activo && segundos > 0) {
             intervalo = setInterval(() => {
                 setSegundos(segundos => segundos - 1);
-            }, 1000);
+            }, 1000); // 1000ms = 1s real. (Pon 10 para probar rápido)
         } else if (segundos === 0 && activo) {
-            setActivo(false);
-            Vibration.vibrate();
             finalizarSesion();
         }
         return () => clearInterval(intervalo);
     }, [activo, segundos]);
 
+    const cargarDatos = async () => {
+        const mins = await leerMinutos();
+        setMinutosGlobales(mins || 0);
+
+        const listaSkills = await leerSkills();
+        setSkills(listaSkills);
+
+        // Si no hay seleccionada, seleccionamos la primera
+        if (listaSkills.length > 0 && !skillSeleccionada) {
+            setSkillSeleccionada(listaSkills[0].id);
+        }
+    };
+
+    // --- LÓGICA RPG ---
     const finalizarSesion = async () => {
-        const nuevosMinutos = minutosAcumulados + 25;
-        setMinutosAcumulados(nuevosMinutos);
+        setActivo(false);
+        Vibration.vibrate();
+
+        // 1. Guardar Minutos Globales
+        const nuevosMinutos = minutosGlobales + 25;
+        setMinutosGlobales(nuevosMinutos);
         await guardarMinutos(nuevosMinutos);
-        Alert.alert("¡Sesión Completada!", `+250 XP ganados. ¡Sigue así!`);
+
+        // 2. Dar XP a la Skill Seleccionada
+        if (skillSeleccionada) {
+            const skillsActualizadas = skills.map(s => {
+                if (s.id === skillSeleccionada) {
+                    let nuevaXP = s.xpActual + XP_POR_SESION;
+                    let nuevoNivel = s.nivel;
+                    let proximoNivelXP = s.xpSiguiente;
+
+                    // Lógica de Level Up
+                    if (nuevaXP >= proximoNivelXP) {
+                        nuevaXP = nuevaXP - proximoNivelXP; // El sobrante se pasa al sig nivel
+                        nuevoNivel += 1;
+                        proximoNivelXP = Math.floor(proximoNivelXP * 1.5); // Cada nivel es más difícil (curva 1.5x)
+                        Alert.alert("¡LEVEL UP! 🎉", `Has subido ${s.nombre} a Nivel ${nuevoNivel}`);
+                    } else {
+                        Alert.alert("Sesión Terminada", `+${XP_POR_SESION} XP para ${s.nombre}`);
+                    }
+
+                    return { ...s, nivel: nuevoNivel, xpActual: nuevaXP, xpSiguiente: proximoNivelXP };
+                }
+                return s;
+            });
+
+            setSkills(skillsActualizadas);
+            await guardarSkills(skillsActualizadas);
+        } else {
+            Alert.alert("¡Sesión Terminada!", "No tenías ninguna habilidad seleccionada, pero los minutos se guardaron.");
+        }
+
         setSegundos(25 * 60);
     };
 
+    // --- GESTIÓN SKILLS ---
+    const crearSkill = async () => {
+        if (!nombreSkill.trim()) return;
+        const nueva = {
+            id: Date.now(),
+            nombre: nombreSkill,
+            nivel: 1,
+            xpActual: 0,
+            xpSiguiente: 500 // XP necesaria para nivel 2
+        };
+        const lista = [...skills, nueva];
+        setSkills(lista);
+        setSkillSeleccionada(nueva.id); // La seleccionamos automáticamente
+        await guardarSkills(lista);
+        setModalVisible(false);
+        setNombreSkill('');
+    };
+
+    const confirmarBorrarSkill = (skill) => {
+        Alert.alert("Eliminar Habilidad", `¿Borrar ${skill.nombre} y todo su progreso?`, [
+            { text: "Cancelar", style: "cancel" },
+            {
+                text: "Borrar", style: "destructive", onPress: async () => {
+                    const filtradas = skills.filter(s => s.id !== skill.id);
+                    setSkills(filtradas);
+                    if (skillSeleccionada === skill.id) setSkillSeleccionada(null);
+                    await guardarSkills(filtradas);
+                }
+            }
+        ]);
+    };
+
+    // Helpers
     const formatoTiempo = (tiempo) => {
         const mins = Math.floor(tiempo / 60);
         const segs = tiempo % 60;
         return `${mins < 10 ? '0' + mins : mins}:${segs < 10 ? '0' + segs : segs}`;
     };
 
-    const debugSumarTiempo = async () => {
-        const nuevosMinutos = minutosAcumulados + 10; // Suma 10 mins para probar rápido
-        setMinutosAcumulados(nuevosMinutos);
-        await guardarMinutos(nuevosMinutos);
+    const skillActivaData = skills.find(s => s.id === skillSeleccionada);
+
+    // DEBUG: Botón trampa para probar sin esperar 25 min
+    const debugCheat = () => {
+        setSegundos(2); // Pone el contador en 2 segundos
+        setActivo(true);
     };
 
     return (
         <SafeAreaView style={styles.container}>
             <ScrollView contentContainerStyle={styles.scrollContent}>
 
-                <Text style={styles.headerTitle}>Mi Cerebro Digital</Text>
+                <Text style={styles.headerTitle}>Entrenamiento</Text>
 
-                {/* --- TARJETA DE NIVEL (NUEVA) --- */}
-                <View style={styles.levelCard}>
-                    <View style={styles.levelInfo}>
-                        <View>
-                            <Text style={styles.levelLabel}>Nivel Actual</Text>
-                            <Text style={styles.levelValue}>{nivelActual}</Text>
-                            <Text style={styles.levelTitle}>{obtenerTitulo(nivelActual)}</Text>
-                        </View>
-                        <View style={styles.xpContainer}>
-                            <Text style={styles.xpText}>{Math.floor(xpEnNivelActual)} / {XP_PARA_SIGUIENTE_NIVEL} XP</Text>
-                        </View>
-                    </View>
-
-                    {/* Barra de Progreso General */}
-                    <View style={styles.progressBarBg}>
-                        <View style={[styles.progressBarFill, { width: `${porcentajeBarra}%` }]} />
-                    </View>
-                </View>
-
-                {/* --- POMODORO --- */}
+                {/* --- CRONÓMETRO --- */}
                 <View style={[styles.focusCard, activo && styles.focusCardActive]}>
                     <View>
-                        <Text style={styles.focusLabel}>Cronómetro</Text>
-                        <Text style={styles.focusTimer}>{formatoTiempo(segundos)}</Text>
-                        <Text style={styles.focusStatus}>
-                            {activo ? '🔥 Ganando XP...' : 'Listo para estudiar'}
+                        <Text style={styles.focusLabel}>
+                            {activo ? 'Entrenando:' : 'Listo para:'}
                         </Text>
+                        <Text style={styles.skillTargetName}>
+                            {skillActivaData ? skillActivaData.nombre : "Selecciona algo..."}
+                        </Text>
+                        <Text style={styles.focusTimer}>{formatoTiempo(segundos)}</Text>
                     </View>
 
                     <View style={styles.timerControls}>
                         <TouchableOpacity
                             style={[styles.playButton, activo ? styles.pauseButton : null]}
-                            onPress={() => setActivo(!activo)}
+                            onPress={() => {
+                                if (!skillSeleccionada) {
+                                    Alert.alert("¡Espera!", "Primero selecciona una habilidad abajo.");
+                                    return;
+                                }
+                                setActivo(!activo);
+                            }}
                         >
                             <Ionicons name={activo ? "pause" : "play"} size={30} color="#fff" />
                         </TouchableOpacity>
@@ -122,37 +193,78 @@ export default function CerebroScreen() {
                     </View>
                 </View>
 
-                {/* --- ESTADÍSTICAS --- */}
-                <View style={styles.statsRow}>
-                    <View style={styles.statItem}>
-                        <Text style={styles.statValue}>{minutosAcumulados}</Text>
-                        <Text style={styles.statLabel}>Minutos Totales</Text>
-                    </View>
-                    <TouchableOpacity onPress={debugSumarTiempo} style={styles.statItem}>
-                        <Ionicons name="flash" size={24} color="#f59e0b" />
-                        <Text style={styles.statLabel}>Cheat (+10m)</Text>
+                {/* --- SELECTOR DE HABILIDADES --- */}
+                <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Tus Habilidades</Text>
+                    <TouchableOpacity onPress={() => setModalVisible(true)}>
+                        <Ionicons name="add-circle" size={28} color="#38bdf8" />
                     </TouchableOpacity>
                 </View>
 
-                <Text style={styles.sectionTitle}>Especialización</Text>
-                <View style={styles.skillsContainer}>
-                    {/* Habilidad que crece contigo */}
-                    <View style={styles.skillItem}>
-                        <View style={styles.skillHeader}>
-                            <Text style={styles.skillName}>Carrera Profesional</Text>
-                            <Text style={styles.skillLevel}>Nvl. {nivelActual}</Text>
-                        </View>
-                        <View style={styles.progressBarBg}>
-                            {/* Esta barra refleja tu progreso general */}
-                            <View style={[styles.progressBarFill, { width: `${porcentajeBarra}%`, backgroundColor: '#38bdf8' }]} />
-                        </View>
-                        <Text style={{ color: '#64748b', fontSize: 10, marginTop: 5 }}>
-                            Próximo rango: {obtenerTitulo(nivelActual + 1)}
-                        </Text>
-                    </View>
-                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.skillsScroll}>
+                    {skills.map((skill) => {
+                        const isSelected = skill.id === skillSeleccionada;
+                        const porcentaje = (skill.xpActual / skill.xpSiguiente) * 100;
+
+                        return (
+                            <TouchableOpacity
+                                key={skill.id}
+                                style={[styles.skillCard, isSelected && styles.skillCardSelected]}
+                                onPress={() => setSkillSeleccionada(skill.id)}
+                                onLongPress={() => confirmarBorrarSkill(skill)}
+                            >
+                                <View style={styles.skillHeader}>
+                                    <Text style={[styles.skillName, isSelected && { color: '#fff' }]}>{skill.nombre}</Text>
+                                    <Text style={[styles.skillLevel, isSelected && { color: '#38bdf8' }]}>Lv.{skill.nivel}</Text>
+                                </View>
+
+                                <View style={styles.progressBarBg}>
+                                    <View style={[styles.progressBarFill, { width: `${porcentaje}%`, backgroundColor: isSelected ? '#38bdf8' : '#64748b' }]} />
+                                </View>
+
+                                <Text style={styles.xpText}>{skill.xpActual} / {skill.xpSiguiente} XP</Text>
+
+                                {isSelected && (
+                                    <View style={styles.selectedBadge}>
+                                        <Ionicons name="checkmark-circle" size={16} color="#38bdf8" />
+                                    </View>
+                                )}
+                            </TouchableOpacity>
+                        );
+                    })}
+                </ScrollView>
+
+                {/* Botón Cheat (Oculto/Debug) */}
+                <TouchableOpacity onPress={debugCheat} style={{ alignSelf: 'center', marginTop: 20, opacity: 0.3 }}>
+                    <Text style={{ color: '#64748b' }}>⚡ Fast Forward (Test)</Text>
+                </TouchableOpacity>
 
             </ScrollView>
+
+            {/* --- MODAL NUEVA SKILL --- */}
+            <Modal animationType="fade" transparent={true} visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
+                <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainer}>
+                    <View style={styles.modalContent}>
+                        <Text style={styles.modalTitle}>Nueva Habilidad 🧠</Text>
+                        <TextInput
+                            style={styles.input}
+                            placeholder="Ej: Python, Inglés, Guitarra..."
+                            placeholderTextColor="#64748b"
+                            value={nombreSkill}
+                            onChangeText={setNombreSkill}
+                        />
+                        <View style={styles.modalButtons}>
+                            <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setModalVisible(false)}>
+                                <Text style={styles.btnText}>Cancelar</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.btn, styles.btnSave]} onPress={crearSkill}>
+                                <Text style={styles.btnText}>Crear</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
+
         </SafeAreaView>
     );
 }
@@ -162,46 +274,49 @@ const styles = StyleSheet.create({
     scrollContent: { padding: 20 },
     headerTitle: { fontSize: 28, fontWeight: 'bold', color: '#f8fafc', marginBottom: 20 },
 
-    // Level Card (Nueva)
-    levelCard: {
-        backgroundColor: '#1e293b', padding: 20, borderRadius: 16, marginBottom: 20,
-        borderWidth: 1, borderColor: '#334155'
-    },
-    levelInfo: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 15 },
-    levelLabel: { color: '#94a3b8', fontSize: 12, textTransform: 'uppercase', letterSpacing: 1 },
-    levelValue: { color: '#38bdf8', fontSize: 42, fontWeight: 'bold', lineHeight: 42 },
-    levelTitle: { color: '#f1f5f9', fontSize: 18, fontWeight: '600' },
-    xpContainer: { backgroundColor: 'rgba(56, 189, 248, 0.1)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-    xpText: { color: '#38bdf8', fontSize: 12, fontWeight: 'bold' },
-
-    // Pomodoro
+    // Timer Card
     focusCard: {
         backgroundColor: '#1e293b', borderRadius: 20, padding: 25, flexDirection: 'row',
-        justifyContent: 'space-between', alignItems: 'center', marginBottom: 20,
-        borderLeftWidth: 4, borderLeftColor: '#334155'
+        justifyContent: 'space-between', alignItems: 'center', marginBottom: 30,
+        borderWidth: 1, borderColor: '#334155'
     },
-    focusCardActive: { borderLeftColor: '#22c55e', backgroundColor: '#172033' }, // Verde al activar
-    focusLabel: { color: '#94a3b8', fontSize: 14, letterSpacing: 1, textTransform: 'uppercase' },
-    focusTimer: { color: '#ffffff', fontSize: 42, fontWeight: 'bold', fontFamily: 'monospace' },
-    focusStatus: { color: '#22c55e', fontSize: 14, fontWeight: '600' },
+    focusCardActive: { borderColor: '#38bdf8', backgroundColor: '#172033' },
+    focusLabel: { color: '#94a3b8', fontSize: 12, textTransform: 'uppercase' },
+    skillTargetName: { color: '#38bdf8', fontSize: 20, fontWeight: 'bold', marginBottom: 5 },
+    focusTimer: { color: '#ffffff', fontSize: 32, fontWeight: 'bold', fontFamily: 'monospace' },
     timerControls: { alignItems: 'center', gap: 10 },
-    playButton: { backgroundColor: '#22c55e', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5 },
+    playButton: { backgroundColor: '#38bdf8', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5 },
     pauseButton: { backgroundColor: '#ef4444' },
     resetButton: { padding: 10 },
 
-    // Stats
-    statsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 30 },
-    statItem: { flex: 1, backgroundColor: '#1e293b', padding: 15, borderRadius: 12, alignItems: 'center', marginHorizontal: 5 },
-    statValue: { color: '#f8fafc', fontSize: 24, fontWeight: 'bold' },
-    statLabel: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
+    // Skills Section
+    sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+    sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#f8fafc' },
+    skillsScroll: { gap: 15, paddingBottom: 20 },
 
-    // Skills
-    sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#f8fafc', marginBottom: 15 },
-    skillsContainer: { backgroundColor: '#1e293b', padding: 15, borderRadius: 16, marginBottom: 30 },
-    skillItem: { marginBottom: 15 },
+    skillCard: {
+        backgroundColor: '#1e293b', width: 140, padding: 15, borderRadius: 16,
+        borderWidth: 1, borderColor: '#334155', opacity: 0.7
+    },
+    skillCardSelected: {
+        borderColor: '#38bdf8', opacity: 1, transform: [{ scale: 1.05 }], backgroundColor: '#1e293b'
+    },
     skillHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-    skillName: { color: '#e2e8f0', fontWeight: 'bold', fontSize: 15 },
-    skillLevel: { color: '#38bdf8', fontWeight: 'bold', fontSize: 12 },
-    progressBarBg: { height: 8, backgroundColor: '#334155', borderRadius: 4, overflow: 'hidden' },
-    progressBarFill: { height: '100%', backgroundColor: '#38bdf8', borderRadius: 4 },
+    skillName: { color: '#94a3b8', fontWeight: 'bold', fontSize: 14, flex: 1 },
+    skillLevel: { color: '#64748b', fontWeight: 'bold', fontSize: 12 },
+    progressBarBg: { height: 6, backgroundColor: '#0f172a', borderRadius: 3, overflow: 'hidden', marginBottom: 5 },
+    progressBarFill: { height: '100%', borderRadius: 3 },
+    xpText: { color: '#64748b', fontSize: 10, textAlign: 'right' },
+    selectedBadge: { position: 'absolute', top: 5, right: 5 },
+
+    // Modal
+    modalContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)' },
+    modalContent: { width: '85%', backgroundColor: '#1e293b', padding: 25, borderRadius: 20, borderWidth: 1, borderColor: '#38bdf8' },
+    modalTitle: { fontSize: 22, fontWeight: 'bold', color: '#f8fafc', marginBottom: 20, textAlign: 'center' },
+    input: { backgroundColor: '#0f172a', color: '#fff', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#334155', marginBottom: 20, fontSize: 16 },
+    modalButtons: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+    btn: { flex: 1, padding: 15, borderRadius: 12, alignItems: 'center' },
+    btnCancel: { backgroundColor: '#334155', marginRight: 10 },
+    btnSave: { backgroundColor: '#38bdf8' },
+    btnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 }
 });

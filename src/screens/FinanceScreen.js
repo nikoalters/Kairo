@@ -26,6 +26,10 @@ export default function FinanceScreen() {
     const [metas, setMetas] = useState([]);
     const [cargando, setCargando] = useState(true);
 
+    // Estados para el Gráfico
+    const [totalIngresos, setTotalIngresos] = useState(0);
+    const [totalGastos, setTotalGastos] = useState(0);
+
     // Modales
     const [modalVisible, setModalVisible] = useState(false);
     const [tipoAccion, setTipoAccion] = useState('ingreso');
@@ -44,16 +48,37 @@ export default function FinanceScreen() {
         cargarDatos();
     }, []);
 
+    // Recalcular gráfico cada vez que cambian los movimientos
+    useEffect(() => {
+        calcularTotales();
+    }, [movimientos]);
+
     const cargarDatos = async () => {
         const s = await leerDinero();
         const m = await leerMovimientos();
         const metasGuardadas = await leerListaMetas();
-        setSaldo(s);
-        setMovimientos(m);
-        setMetas(metasGuardadas);
+        setSaldo(s || 0);
+        setMovimientos(m || []);
+        setMetas(metasGuardadas || []);
         setCargando(false);
     };
 
+    const calcularTotales = () => {
+        // Filtramos el historial para sumar ingresos y gastos
+        // Nota: Asumimos que los movimientos guardados tienen { monto: positivos o negativos }
+        const ingresos = movimientos
+            .filter(m => m.tipo === 'ingreso' || (m.tipo === 'neutro' && m.monto > 0)) // Ingresos y Ahorros
+            .reduce((acc, curr) => acc + Math.abs(curr.monto), 0);
+
+        const gastos = movimientos
+            .filter(m => m.tipo === 'gasto')
+            .reduce((acc, curr) => acc + Math.abs(curr.monto), 0);
+
+        setTotalIngresos(ingresos);
+        setTotalGastos(gastos);
+    };
+
+    // --- LÓGICA DE METAS ---
     const crearMeta = () => {
         if (!nombreMeta || !montoMeta) return;
         const nuevaMeta = {
@@ -69,31 +94,17 @@ export default function FinanceScreen() {
         setNombreMeta(''); setMontoMeta('');
     };
 
-    // --- NUEVA FUNCIÓN: ELIMINAR META ---
     const confirmarEliminarMeta = () => {
         if (!metaSeleccionada) return;
-
         const tieneFondos = metaSeleccionada.ahorrado > 0;
-
         Alert.alert(
             "Eliminar Meta",
-            tieneFondos
-                ? `Esta meta tiene ${formatoDinero(metaSeleccionada.ahorrado)}. ¿Qué hacemos con el dinero?`
-                : "¿Estás seguro de borrar esta meta?",
+            tieneFondos ? `Hay ${formatoDinero(metaSeleccionada.ahorrado)}. ¿Qué hacemos?` : "¿Borrar meta?",
             [
                 { text: "Cancelar", style: "cancel" },
-                // Opción 1: Si tiene fondos, devolver a billetera
-                tieneFondos ? {
-                    text: "Devolver a Billetera",
-                    onPress: () => eliminarMeta(true)
-                } : null,
-                // Opción 2: Borrar definitivamente (Gastar/Perder)
-                {
-                    text: tieneFondos ? "Borrar (Sin devolver)" : "Sí, Borrar",
-                    style: "destructive",
-                    onPress: () => eliminarMeta(false)
-                }
-            ].filter(Boolean) // Filtra opciones nulas
+                tieneFondos ? { text: "Devolver a Billetera", onPress: () => eliminarMeta(true) } : null,
+                { text: tieneFondos ? "Borrar (Sin devolver)" : "Sí, Borrar", style: "destructive", onPress: () => eliminarMeta(false) }
+            ].filter(Boolean)
         );
     };
 
@@ -104,13 +115,11 @@ export default function FinanceScreen() {
             guardarDinero(nuevoSaldo);
             registrarMovimiento(`Cierre Meta: ${metaSeleccionada.nombre}`, metaSeleccionada.ahorrado, '💰', 'ingreso');
         }
-
         const nuevasMetas = metas.filter(m => m.id !== metaSeleccionada.id);
         setMetas(nuevasMetas);
         guardarListaMetas(nuevasMetas);
         setModalDetalleMeta(false);
     };
-    // ------------------------------------
 
     const gestionarMeta = (accion, monto) => {
         if (!metaSeleccionada || !monto) return;
@@ -118,15 +127,11 @@ export default function FinanceScreen() {
         if (isNaN(valor) || valor <= 0) return;
 
         if (accion === 'retirar') {
-            if (metaSeleccionada.ahorrado < valor) {
-                Alert.alert("Error", "No tienes suficiente dinero en esta meta.");
-                return;
-            }
+            if (metaSeleccionada.ahorrado < valor) { Alert.alert("Error", "Saldo insuficiente en meta"); return; }
             const nuevoSaldo = saldo + valor;
             setSaldo(nuevoSaldo);
             guardarDinero(nuevoSaldo);
             registrarMovimiento(`Rescate: ${metaSeleccionada.nombre}`, valor, '🚨', 'ingreso');
-            Alert.alert("Transferencia", `Has movido ${formatoDinero(valor)} a tu Billetera.`);
         }
 
         const metasActualizadas = metas.map(m => {
@@ -136,29 +141,22 @@ export default function FinanceScreen() {
             }
             return m;
         });
-
         setMetas(metasActualizadas);
         guardarListaMetas(metasActualizadas);
         setModalDetalleMeta(false);
     };
 
+    // --- TRANSACCIONES ---
     const procesarTransaccion = () => {
         const valor = parseInt(montoInput);
-        if (!tituloInput || isNaN(valor) || valor <= 0) {
-            Alert.alert("Error", "Datos inválidos");
-            return;
-        }
+        if (!tituloInput || isNaN(valor) || valor <= 0) { Alert.alert("Error", "Datos inválidos"); return; }
 
         if (tipoAccion === 'gasto') {
-            if (saldo < valor) {
-                Alert.alert("Saldo Insuficiente", "No tienes dinero en la billetera.");
-                return;
-            }
+            if (saldo < valor) { Alert.alert("Saldo Insuficiente", "Falta plata en la billetera."); return; }
             const nuevoSaldo = saldo - valor;
             setSaldo(nuevoSaldo);
             guardarDinero(nuevoSaldo);
             registrarMovimiento(tituloInput, -valor, '💸', 'gasto');
-
         } else {
             if (destinoSeleccionado === 'billetera') {
                 const nuevoSaldo = saldo + valor;
@@ -167,14 +165,11 @@ export default function FinanceScreen() {
                 registrarMovimiento(tituloInput, valor, '💰', 'ingreso');
             } else {
                 const metasActualizadas = metas.map(m => {
-                    if (m.id === destinoSeleccionado) {
-                        return { ...m, ahorrado: m.ahorrado + valor };
-                    }
+                    if (m.id === destinoSeleccionado) return { ...m, ahorrado: m.ahorrado + valor };
                     return m;
                 });
                 setMetas(metasActualizadas);
                 guardarListaMetas(metasActualizadas);
-
                 const metaDestino = metas.find(m => m.id === destinoSeleccionado);
                 registrarMovimiento(`${tituloInput} (${metaDestino.nombre})`, valor, '🎯', 'neutro');
             }
@@ -183,26 +178,20 @@ export default function FinanceScreen() {
     };
 
     const registrarMovimiento = (titulo, monto, icono, tipo) => {
-        const nuevoMov = { id: Date.now(), titulo, fecha: 'Hoy', monto, icono, tipo };
+        const nuevoMov = { id: Date.now(), titulo, fecha: new Date().toLocaleDateString(), monto, icono, tipo };
         const lista = [nuevoMov, ...movimientos];
         setMovimientos(lista);
         guardarMovimientos(lista);
     };
 
-    const abrirModalIngreso = () => {
-        setTipoAccion('ingreso');
-        setDestinoSeleccionado('billetera');
-        setMontoInput(''); setTituloInput('');
-        setModalVisible(true);
-    };
-
-    const abrirModalGasto = () => {
-        setTipoAccion('gasto');
-        setMontoInput(''); setTituloInput('');
-        setModalVisible(true);
-    };
-
+    const abrirModalIngreso = () => { setTipoAccion('ingreso'); setDestinoSeleccionado('billetera'); setMontoInput(''); setTituloInput(''); setModalVisible(true); };
+    const abrirModalGasto = () => { setTipoAccion('gasto'); setMontoInput(''); setTituloInput(''); setModalVisible(true); };
     const formatoDinero = (valor) => '$ ' + valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+    // Cálculos visuales para el gráfico
+    const maxGrafico = Math.max(totalIngresos, totalGastos, 1); // Evitar división por cero
+    const alturaIngresos = (totalIngresos / maxGrafico) * 100;
+    const alturaGastos = (totalGastos / maxGrafico) * 100;
 
     if (cargando) return <View style={styles.center}><Text style={{ color: '#38bdf8' }}>Cargando...</Text></View>;
 
@@ -211,6 +200,36 @@ export default function FinanceScreen() {
             <ScrollView contentContainerStyle={styles.scrollContent}>
 
                 <Text style={styles.headerTitle}>Finanzas</Text>
+
+                {/* --- NUEVO: GRÁFICO DE BARRAS --- */}
+                <View style={styles.chartCard}>
+                    <Text style={styles.chartTitle}>Flujo de Caja (Histórico)</Text>
+                    <View style={styles.chartContainer}>
+                        {/* Barra Ingresos */}
+                        <View style={styles.barGroup}>
+                            <Text style={styles.barValue}>{formatoDinero(totalIngresos)}</Text>
+                            <View style={[styles.barTrack, { height: 100 }]}>
+                                <View style={[styles.barFill, { height: `${alturaIngresos}%`, backgroundColor: '#22c55e' }]} />
+                            </View>
+                            <Text style={styles.barLabel}>Entradas</Text>
+                        </View>
+
+                        {/* VS */}
+                        <View style={{ justifyContent: 'center', paddingBottom: 20 }}>
+                            <Text style={{ color: '#64748b', fontWeight: 'bold' }}>VS</Text>
+                        </View>
+
+                        {/* Barra Gastos */}
+                        <View style={styles.barGroup}>
+                            <Text style={styles.barValue}>{formatoDinero(totalGastos)}</Text>
+                            <View style={[styles.barTrack, { height: 100 }]}>
+                                <View style={[styles.barFill, { height: `${alturaGastos}%`, backgroundColor: '#ef4444' }]} />
+                            </View>
+                            <Text style={styles.barLabel}>Salidas</Text>
+                        </View>
+                    </View>
+                </View>
+                {/* ------------------------------- */}
 
                 <View style={styles.balanceCard}>
                     <Text style={styles.balanceLabel}>Disponible en Billetera</Text>
@@ -234,25 +253,18 @@ export default function FinanceScreen() {
                             <Text style={{ color: '#64748b' }}>+ Crear Nueva Meta</Text>
                         </TouchableOpacity>
                     ) : (
-                        metas.map(meta => {
-                            const progreso = Math.min((meta.ahorrado / meta.objetivo) * 100, 100);
-                            return (
-                                <TouchableOpacity
-                                    key={meta.id}
-                                    style={styles.goalCardMini}
-                                    onPress={() => { setMetaSeleccionada(meta); setModalDetalleMeta(true); }}
-                                >
-                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                                        <Text style={styles.goalTitleMini}>{meta.nombre}</Text>
-                                        <Text style={styles.goalPercentMini}>{Math.floor(progreso)}%</Text>
-                                    </View>
-                                    <Text style={styles.goalAmountMini}>{formatoDinero(meta.ahorrado)}</Text>
-                                    <View style={styles.progressBgMini}>
-                                        <View style={[styles.progressFillMini, { width: `${progreso}%` }]} />
-                                    </View>
-                                </TouchableOpacity>
-                            );
-                        })
+                        metas.map(meta => (
+                            <TouchableOpacity key={meta.id} style={styles.goalCardMini} onPress={() => { setMetaSeleccionada(meta); setModalDetalleMeta(true); }}>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                    <Text style={styles.goalTitleMini}>{meta.nombre}</Text>
+                                    <Text style={styles.goalPercentMini}>{Math.floor(Math.min((meta.ahorrado / meta.objetivo) * 100, 100))}%</Text>
+                                </View>
+                                <Text style={styles.goalAmountMini}>{formatoDinero(meta.ahorrado)}</Text>
+                                <View style={styles.progressBgMini}>
+                                    <View style={[styles.progressFillMini, { width: `${Math.min((meta.ahorrado / meta.objetivo) * 100, 100)}%` }]} />
+                                </View>
+                            </TouchableOpacity>
+                        ))
                     )}
                 </ScrollView>
 
@@ -298,7 +310,6 @@ export default function FinanceScreen() {
                         <TextInput style={styles.input} keyboardType="numeric" placeholder="0" placeholderTextColor="#64748b" value={montoInput} onChangeText={setMontoInput} />
                         <Text style={styles.label}>Descripción:</Text>
                         <TextInput style={styles.input} placeholder="..." placeholderTextColor="#64748b" value={tituloInput} onChangeText={setTituloInput} />
-
                         {tipoAccion === 'ingreso' && (
                             <View style={{ marginBottom: 20 }}>
                                 <Text style={styles.label}>Destino:</Text>
@@ -314,7 +325,6 @@ export default function FinanceScreen() {
                                 </ScrollView>
                             </View>
                         )}
-
                         <View style={styles.modalButtons}>
                             <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setModalVisible(false)}><Text style={styles.btnText}>Cancelar</Text></TouchableOpacity>
                             <TouchableOpacity style={[styles.btn, styles.btnSave]} onPress={procesarTransaccion}><Text style={styles.btnText}>Guardar</Text></TouchableOpacity>
@@ -336,40 +346,17 @@ export default function FinanceScreen() {
                 </View>
             </Modal>
 
-            {/* --- MODAL 3: GESTIONAR META (CON BORRAR) --- */}
+            {/* --- MODAL 3: GESTIONAR META --- */}
             <Modal animationType="slide" transparent={true} visible={modalDetalleMeta} onRequestClose={() => setModalDetalleMeta(false)}>
                 <View style={styles.modalContainer}>
                     <View style={styles.modalContent}>
-
-                        {/* Encabezado con Botón de Borrar */}
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                             <Text style={[styles.modalTitle, { marginBottom: 0 }]}>{metaSeleccionada?.nombre}</Text>
-                            <TouchableOpacity onPress={confirmarEliminarMeta} style={{ padding: 5 }}>
-                                <Ionicons name="trash-outline" size={24} color="#ef4444" />
-                            </TouchableOpacity>
+                            <TouchableOpacity onPress={confirmarEliminarMeta} style={{ padding: 5 }}><Ionicons name="trash-outline" size={24} color="#ef4444" /></TouchableOpacity>
                         </View>
-
-                        <Text style={{ color: '#94a3b8', textAlign: 'center', marginBottom: 20 }}>
-                            Ahorrado: {formatoDinero(metaSeleccionada?.ahorrado || 0)} / {formatoDinero(metaSeleccionada?.objetivo || 0)}
-                        </Text>
-
-                        {/* Barra de Progreso en el Modal */}
-                        <View style={[styles.progressBgMini, { height: 10, marginBottom: 20 }]}>
-                            <View style={[styles.progressFillMini, { width: `${Math.min(((metaSeleccionada?.ahorrado || 0) / (metaSeleccionada?.objetivo || 1)) * 100, 100)}%` }]} />
-                        </View>
-
-                        <TouchableOpacity
-                            style={[styles.btn, { backgroundColor: '#ef4444', marginBottom: 10 }]}
-                            onPress={() => {
-                                Alert.alert("Retiro de Emergencia", "¿Cuánto necesitas retirar?", [
-                                    { text: "Todo", onPress: () => gestionarMeta('retirar', metaSeleccionada.ahorrado) },
-                                    { text: "Cancelar", style: "cancel" }
-                                ]);
-                            }}
-                        >
-                            <Text style={styles.btnText}>🚨 Retiro Emergencia</Text>
-                        </TouchableOpacity>
-
+                        <Text style={{ color: '#94a3b8', textAlign: 'center', marginBottom: 20 }}>Ahorrado: {formatoDinero(metaSeleccionada?.ahorrado || 0)} / {formatoDinero(metaSeleccionada?.objetivo || 0)}</Text>
+                        <View style={[styles.progressBgMini, { height: 10, marginBottom: 20 }]}><View style={[styles.progressFillMini, { width: `${Math.min(((metaSeleccionada?.ahorrado || 0) / (metaSeleccionada?.objetivo || 1)) * 100, 100)}%` }]} /></View>
+                        <TouchableOpacity style={[styles.btn, { backgroundColor: '#ef4444', marginBottom: 10 }]} onPress={() => { Alert.alert("Retiro de Emergencia", "¿Cuánto retirar?", [{ text: "Todo", onPress: () => gestionarMeta('retirar', metaSeleccionada.ahorrado) }, { text: "Cancelar", style: "cancel" }]); }}><Text style={styles.btnText}>🚨 Retiro Emergencia</Text></TouchableOpacity>
                         <TouchableOpacity style={{ alignItems: 'center', marginTop: 15 }} onPress={() => setModalDetalleMeta(false)}><Text style={{ color: '#64748b' }}>Cerrar</Text></TouchableOpacity>
                     </View>
                 </View>
@@ -383,6 +370,17 @@ const styles = StyleSheet.create({
     center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     scrollContent: { padding: 20 },
     headerTitle: { fontSize: 28, fontWeight: 'bold', color: '#f8fafc', marginBottom: 20 },
+
+    // CHART STYLES (NUEVO)
+    chartCard: { backgroundColor: '#1e293b', borderRadius: 20, padding: 20, marginBottom: 25, borderWidth: 1, borderColor: '#334155' },
+    chartTitle: { color: '#94a3b8', fontSize: 14, textTransform: 'uppercase', marginBottom: 15, textAlign: 'center' },
+    chartContainer: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'flex-end', height: 150 },
+    barGroup: { alignItems: 'center', width: 60 },
+    barTrack: { width: 20, backgroundColor: '#0f172a', borderRadius: 10, justifyContent: 'flex-end', overflow: 'hidden' },
+    barFill: { width: '100%', borderRadius: 10 },
+    barLabel: { color: '#cbd5e1', fontSize: 12, marginTop: 8, fontWeight: 'bold' },
+    barValue: { color: '#fff', fontSize: 10, marginBottom: 5, fontWeight: 'bold' },
+
     balanceCard: { backgroundColor: '#1e293b', borderRadius: 20, padding: 25, marginBottom: 25, borderWidth: 1, borderColor: '#334155' },
     balanceLabel: { color: '#94a3b8', fontSize: 14, textTransform: 'uppercase' },
     balanceAmount: { color: '#ffffff', fontSize: 36, fontWeight: 'bold', marginVertical: 10 },

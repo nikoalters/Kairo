@@ -1,140 +1,201 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useState } from 'react';
-import { Alert, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { borrarTodo, leerDinero, leerMinutos } from '../utils/storage';
+import {
+    Alert,
+    Image,
+    RefreshControl,
+    SafeAreaView, ScrollView,
+    StyleSheet, Text,
+    TouchableOpacity,
+    View
+} from 'react-native';
+import { borrarTodo, leerDinero, leerHabitos, leerMinutos } from '../utils/storage';
 
 export default function ProfileScreen() {
-    const [nivel, setNivel] = useState(1);
-    const [titulo, setTitulo] = useState("Novato");
-    const [minutosTotales, setMinutosTotales] = useState(0);
-    const [dineroTotal, setDineroTotal] = useState(0);
+    const [loading, setLoading] = useState(false);
 
-    // Lógica de Niveles (Misma que en Cerebro)
-    const calcularNivel = (mins) => {
-        const XP_POR_MINUTO = 10;
-        const XP_PARA_SIGUIENTE_NIVEL = 500;
-        const xpTotal = mins * XP_POR_MINUTO;
-        return Math.floor(xpTotal / XP_PARA_SIGUIENTE_NIVEL) + 1;
-    };
-
-    const obtenerTitulo = (lvl) => {
-        if (lvl < 5) return "Novato";
-        if (lvl < 10) return "Aprendiz";
-        if (lvl < 20) return "Junior Dev";
-        if (lvl < 30) return "Semi-Senior";
-        return "Senior Architect";
-    };
+    // Datos del Usuario RPG
+    const [stats, setStats] = useState({
+        dinero: 0,
+        minutos: 0,
+        habitosCompletados: 0,
+        nivel: 1,
+        xpTotal: 0,
+        clase: "Novato"
+    });
 
     useFocusEffect(
         useCallback(() => {
-            const cargarDatos = async () => {
-                // 1. Cargar Tiempo y Calcular Nivel
-                const mins = await leerMinutos();
-                setMinutosTotales(mins || 0);
-
-                const lvl = calcularNivel(mins || 0);
-                setNivel(lvl);
-                setTitulo(obtenerTitulo(lvl));
-
-                // 2. Cargar Dinero
-                const dinero = await leerDinero();
-                setDineroTotal(dinero || 0);
-            };
-            cargarDatos();
+            cargarPerfil();
         }, [])
     );
 
-    const handleReset = async () => {
+    const cargarPerfil = async () => {
+        setLoading(true);
+
+        // 1. Cargar datos crudos
+        const dinero = await leerDinero() || 0;
+        const minutos = await leerMinutos() || 0;
+        const habitos = await leerHabitos() || [];
+
+        // 2. Calcular Estadísticas RPG
+        const countHabitos = habitos.filter(h => h.completado).length;
+
+        // FÓRMULA DE XP: 
+        // 1 minuto = 1 XP
+        // 1 hábito = 50 XP
+        // $1.000 pesos = 1 XP (para que el dinero no rompa el juego)
+        const xpDinero = Math.floor(dinero / 1000);
+        const xpHabitos = countHabitos * 50;
+        const xpTiempo = minutos;
+
+        const xpTotal = xpDinero + xpHabitos + xpTiempo;
+
+        // FÓRMULA DE NIVEL: Cada 1000 XP subes de nivel
+        const nivel = Math.floor(xpTotal / 1000) + 1;
+
+        // Determinar "Clase" según el nivel
+        let clase = "Nómada Digital";
+        if (nivel >= 5) clase = "Freelancer";
+        if (nivel >= 10) clase = "SysAdmin";
+        if (nivel >= 20) clase = "Netrunner";
+        if (nivel >= 50) clase = "Cyber-Lord";
+
+        setStats({
+            dinero,
+            minutos,
+            habitosCompletados: countHabitos,
+            nivel,
+            xpTotal,
+            clase
+        });
+
+        setLoading(false);
+    };
+
+    const confirmarBorrado = () => {
         Alert.alert(
-            "¿Reiniciar Sistema?",
-            "Esto borrará todo tu dinero y progreso. No hay vuelta atrás.",
+            "⚠ ZONA DE PELIGRO",
+            "¿Estás seguro de hacer un Factory Reset? Se borrará todo tu dinero, metas, habilidades y progreso. No hay vuelta atrás.",
             [
                 { text: "Cancelar", style: "cancel" },
                 {
-                    text: "Sí, Borrar Todo",
+                    text: "SÍ, BORRAR TODO",
                     style: "destructive",
                     onPress: async () => {
                         await borrarTodo();
-                        // Forzamos actualización visual a cero
-                        setNivel(1);
-                        setTitulo("Novato");
-                        setMinutosTotales(0);
-                        setDineroTotal(0);
+                        Alert.alert("Reinicio", "Sistema formateado. Reinicia la app.");
+                        cargarPerfil(); // Recargar para ver todo en cero
                     }
                 }
             ]
         );
     };
 
-    const formatoDinero = (valor) => {
-        return '$ ' + valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-    };
+    // Barra de progreso hacia el siguiente nivel
+    const xpParaSiguienteNivel = stats.nivel * 1000;
+    const progresoNivel = (stats.xpTotal % 1000) / 1000 * 100;
 
     return (
         <SafeAreaView style={styles.container}>
-            <ScrollView contentContainerStyle={styles.content}>
+            <ScrollView
+                contentContainerStyle={styles.content}
+                refreshControl={<RefreshControl refreshing={loading} onRefresh={cargarPerfil} tintColor="#38bdf8" />}
+            >
 
-                {/* Encabezado del Perfil */}
-                <View style={styles.header}>
-                    <View style={styles.avatarContainer}>
-                        {/* Puedes cambiar este ícono por una imagen real con <Image /> */}
-                        <Ionicons name="person" size={50} color="#cbd5e1" />
+                {/* --- TARJETA DE IDENTIDAD --- */}
+                <View style={styles.idCard}>
+                    <View style={styles.headerRow}>
+                        <View style={styles.avatarContainer}>
+                            {/* Si no tienes icon.png aun, usa una url externa o un icono */}
+                            <Image
+                                source={require('../../assets/icon.png')}
+                                style={styles.avatarImage}
+                                resizeMode="cover"
+                            />
+                        </View>
+                        <View style={styles.idInfo}>
+                            <Text style={styles.username}>Nico Soto</Text>
+                            <Text style={styles.userClass}>{stats.clase}</Text>
+                            <View style={styles.levelBadge}>
+                                <Text style={styles.levelText}>LVL {stats.nivel}</Text>
+                            </View>
+                        </View>
                     </View>
-                    <Text style={styles.username}>Nico Soto</Text>
 
-                    {/* Rango Dinámico */}
-                    <Text style={styles.role}>{titulo}</Text>
-
-                    <View style={styles.badge}>
-                        <Text style={styles.badgeText}>NIVEL {nivel}</Text>
+                    {/* Barra de XP Global */}
+                    <View style={styles.xpSection}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}>
+                            <Text style={styles.xpLabel}>Progreso de Sistema</Text>
+                            <Text style={styles.xpValue}>{stats.xpTotal} / {xpParaSiguienteNivel} XP</Text>
+                        </View>
+                        <View style={styles.progressBarBg}>
+                            <View style={[styles.progressBarFill, { width: `${progresoNivel}%` }]} />
+                        </View>
                     </View>
                 </View>
 
-                {/* Estadísticas Reales */}
-                <View style={styles.statsContainer}>
-                    <View style={styles.statItem}>
-                        <Text style={styles.statNumber}>{minutosTotales}m</Text>
-                        <Text style={styles.statLabel}>Tiempo Estudio</Text>
+                {/* --- ESTADÍSTICAS (HEXAGONALES SIMULADAS) --- */}
+                <Text style={styles.sectionTitle}>Atributos</Text>
+                <View style={styles.statsGrid}>
+
+                    {/* INTELIGENCIA (Minutos) */}
+                    <View style={styles.statBox}>
+                        <View style={[styles.iconCircle, { backgroundColor: 'rgba(56, 189, 248, 0.2)' }]}>
+                            <Ionicons name="hardware-chip" size={24} color="#38bdf8" />
+                        </View>
+                        <Text style={styles.statValue}>{stats.minutos}</Text>
+                        <Text style={styles.statLabel}>INT (Mins)</Text>
                     </View>
-                    <View style={[styles.statItem, styles.statBorder]}>
-                        <Text style={styles.statNumber}>{formatoDinero(dineroTotal)}</Text>
-                        <Text style={styles.statLabel}>Patrimonio</Text>
+
+                    {/* DISCIPLINA (Hábitos) */}
+                    <View style={styles.statBox}>
+                        <View style={[styles.iconCircle, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
+                            <Ionicons name="checkbox" size={24} color="#f59e0b" />
+                        </View>
+                        <Text style={styles.statValue}>{stats.habitosCompletados}</Text>
+                        <Text style={styles.statLabel}>DIS (Hab)</Text>
                     </View>
-                    <View style={styles.statItem}>
-                        <Text style={styles.statNumber}>Infinite</Text>
-                        <Text style={styles.statLabel}>Potencial</Text>
+
+                    {/* ECONOMÍA (Dinero/1000) */}
+                    <View style={styles.statBox}>
+                        <View style={[styles.iconCircle, { backgroundColor: 'rgba(34, 197, 94, 0.2)' }]}>
+                            <Ionicons name="cash" size={24} color="#22c55e" />
+                        </View>
+                        <Text style={styles.statValue}>{Math.floor(stats.dinero / 1000)}k</Text>
+                        <Text style={styles.statLabel}>ECO (CLP)</Text>
                     </View>
+
                 </View>
 
-                {/* Menú de Opciones */}
-                <View style={styles.menuWrapper}>
-                    <Text style={styles.sectionTitle}>Configuración</Text>
+                {/* --- OPCIONES DE SISTEMA --- */}
+                <Text style={styles.sectionTitle}>Sistema</Text>
 
-                    <TouchableOpacity style={styles.menuItem}>
-                        <View style={styles.menuIcon}>
-                            <Ionicons name="settings-outline" size={22} color="#38bdf8" />
-                        </View>
-                        <Text style={styles.menuText}>Editar Perfil</Text>
-                        <Ionicons name="chevron-forward" size={20} color="#475569" />
-                    </TouchableOpacity>
+                <TouchableOpacity style={styles.optionRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Ionicons name="cloud-upload-outline" size={24} color="#94a3b8" />
+                        <Text style={styles.optionText}>Exportar Datos (JSON)</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#64748b" />
+                </TouchableOpacity>
 
-                    <TouchableOpacity style={styles.menuItem}>
-                        <View style={styles.menuIcon}>
-                            <Ionicons name="notifications-outline" size={22} color="#38bdf8" />
-                        </View>
-                        <Text style={styles.menuText}>Notificaciones</Text>
-                        <Ionicons name="chevron-forward" size={20} color="#475569" />
-                    </TouchableOpacity>
+                <TouchableOpacity style={styles.optionRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Ionicons name="color-palette-outline" size={24} color="#94a3b8" />
+                        <Text style={styles.optionText}>Personalizar Tema</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#64748b" />
+                </TouchableOpacity>
 
-                    {/* BOTÓN DE RESETEAR (MOVIDO AQUÍ) */}
-                    <TouchableOpacity style={[styles.menuItem, { borderBottomWidth: 0, marginTop: 20 }]} onPress={handleReset}>
-                        <View style={[styles.menuIcon, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
-                            <Ionicons name="trash-outline" size={22} color="#ef4444" />
-                        </View>
-                        <Text style={[styles.menuText, { color: '#ef4444' }]}>Resetear Fábrica</Text>
-                    </TouchableOpacity>
-                </View>
+                <TouchableOpacity style={[styles.optionRow, { borderBottomWidth: 0 }]} onPress={confirmarBorrado}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Ionicons name="trash-bin-outline" size={24} color="#ef4444" />
+                        <Text style={[styles.optionText, { color: '#ef4444' }]}>Factory Reset</Text>
+                    </View>
+                </TouchableOpacity>
+
+                <Text style={styles.versionText}>KAIRO OS v1.0.4 Beta</Text>
 
             </ScrollView>
         </SafeAreaView>
@@ -143,27 +204,36 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0f172a' },
-    content: { padding: 20, alignItems: 'center' },
+    content: { padding: 20 },
 
-    // Header
-    header: { alignItems: 'center', marginBottom: 30, width: '100%' },
-    avatarContainer: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#1e293b', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#38bdf8', marginBottom: 15 },
-    username: { color: '#f8fafc', fontSize: 24, fontWeight: 'bold', marginBottom: 5 },
-    role: { color: '#94a3b8', fontSize: 16, marginBottom: 10 },
-    badge: { backgroundColor: 'rgba(34, 197, 94, 0.2)', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20, borderWidth: 1, borderColor: '#22c55e' },
-    badgeText: { color: '#22c55e', fontSize: 12, fontWeight: 'bold' },
+    // ID CARD
+    idCard: { backgroundColor: '#1e293b', borderRadius: 20, padding: 20, marginBottom: 30, borderWidth: 1, borderColor: '#334155' },
+    headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
+    avatarContainer: { width: 80, height: 80, borderRadius: 40, borderWidth: 2, borderColor: '#38bdf8', overflow: 'hidden', marginRight: 20, backgroundColor: '#000' },
+    avatarImage: { width: '100%', height: '100%' },
+    idInfo: { flex: 1 },
+    username: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
+    userClass: { color: '#94a3b8', fontSize: 14, marginBottom: 8 },
+    levelBadge: { backgroundColor: '#38bdf8', alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+    levelText: { color: '#0f172a', fontWeight: 'bold', fontSize: 12 },
 
-    // Stats
-    statsContainer: { flexDirection: 'row', backgroundColor: '#1e293b', borderRadius: 16, padding: 20, width: '100%', justifyContent: 'space-between', marginBottom: 30 },
-    statItem: { alignItems: 'center', flex: 1 },
-    statBorder: { borderLeftWidth: 1, borderRightWidth: 1, borderColor: '#334155' },
-    statNumber: { color: '#f8fafc', fontSize: 18, fontWeight: 'bold', marginBottom: 5 },
-    statLabel: { color: '#64748b', fontSize: 12 },
+    xpSection: { marginTop: 10 },
+    xpLabel: { color: '#64748b', fontSize: 12, marginBottom: 5 },
+    xpValue: { color: '#f8fafc', fontSize: 12, fontWeight: 'bold' },
+    progressBarBg: { height: 8, backgroundColor: '#0f172a', borderRadius: 4, overflow: 'hidden' },
+    progressBarFill: { height: '100%', backgroundColor: '#38bdf8', borderRadius: 4 },
 
-    // Menu
-    menuWrapper: { width: '100%' },
-    sectionTitle: { color: '#94a3b8', fontSize: 14, marginBottom: 15, marginLeft: 10, textTransform: 'uppercase', letterSpacing: 1 },
-    menuItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e293b', padding: 15, borderRadius: 12, marginBottom: 10 },
-    menuIcon: { width: 40, height: 40, backgroundColor: 'rgba(56, 189, 248, 0.1)', borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
-    menuText: { flex: 1, color: '#f1f5f9', fontSize: 16, fontWeight: '500' },
+    // STATS GRID
+    sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#f8fafc', marginBottom: 15, textTransform: 'uppercase', letterSpacing: 1 },
+    statsGrid: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 30 },
+    statBox: { backgroundColor: '#1e293b', width: '30%', padding: 15, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
+    iconCircle: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
+    statValue: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+    statLabel: { color: '#64748b', fontSize: 12, marginTop: 2 },
+
+    // OPTIONS
+    optionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#334155' },
+    optionText: { color: '#cbd5e1', fontSize: 16, marginLeft: 15 },
+
+    versionText: { textAlign: 'center', color: '#475569', marginTop: 30, fontSize: 12, fontFamily: 'monospace' }
 });
